@@ -22,13 +22,13 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-default-secret-key')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-# ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '127.0.0.1').split(',')
 ALLOWED_HOSTS = ["*"]
 
 # Application definition
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
+    'jazzmin',
+    "django.contrib.admin",
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -39,12 +39,17 @@ INSTALLED_APPS = [
     "corsheaders",
     'rest_framework',
     
+    
+    'django_celery_results',
+    'django_celery_beat',
+    
     # Local apps
     'telegram_users',
     'menu',
     'orders',
     'favorites',
     'content',
+    'addresses',
     
 ]
 
@@ -159,3 +164,24 @@ CORS_ALLOWED_ORIGINS = [
     "https://tss7pc8k-8000.euw.devtunnels.ms",
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# Celery Configuration Options
+# Используем файловую систему как брокер (для разработки без RabbitMQ/Redis)
+CELERY_BROKER_URL = "filesystem://"
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "data_folder_in": os.path.join(BASE_DIR, "broker", "in"),
+    "data_folder_out": os.path.join(BASE_DIR, "broker", "out"),
+    "data_folder_processed": os.path.join(BASE_DIR, "broker", "processed"),
+}
+CELERY_RESULT_BACKEND = 'django-db'
+CELERY_ACCEPT_CONTENT = ['application/json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+
+# Click Settings
+CLICK_SERVICE_ID = os.getenv("CLICK_SERVICE_ID")
+CLICK_MERCHANT_ID = os.getenv("CLICK_MERCHANT_ID")
+CLICK_SECRET_KEY = os.getenv("CLICK_SECRET_KEY")
+CLICK_MERCHANT_USER_ID = os.getenv("CLICK_MERCHANT_USER_ID")
+CLICK_IS_MOCK = os.getenv("CLICK_IS_MOCK", "True") == "True"

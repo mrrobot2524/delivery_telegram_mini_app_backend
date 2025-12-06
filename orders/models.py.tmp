@@ -1,0 +1,10 @@
+    
+    # Связь с сохраненным адресом
+    delivery_address = models.ForeignKey(
+        'addresses.UserAddress',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="orders",
+        help_text="Сохраненный адрес доставки пользователя"
+    )

@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Integration Test</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 20px auto; padding: 20px; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-bottom: 10px; }
+        h2 { color: #666; font-size: 18px; margin: 15px 0 10px 0; border-bottom: 1px solid #eee; padding-bottom: 8px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: 500; color: #555; }
+        input, textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        input:focus, textarea:focus { outline: none; border-color: #007bff; box-shadow: 0 0 0 2px rgba(0,123,255,0.25); }
+        button { background: #007bff; color: white; padding: 10px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; }
+        button:hover { background: #0056b3; }
+        .success { background: #d4edda; color: #155724; padding: 12px; border-radius: 4px; border: 1px solid #c3e6cb; margin-bottom: 15px; }
+        .error { background: #f8d7da; color: #721c24; padding: 12px; border-radius: 4px; border: 1px solid #f5c6cb; margin-bottom: 15px; }
+        .info { background: #d1ecf1; color: #0c5460; padding: 12px; border-radius: 4px; border: 1px solid #bee5eb; margin-bottom: 15px; }
+        .code { background: #f8f9fa; padding: 12px; border-radius: 4px; border: 1px solid #dee2e6; font-family: 'Courier New', monospace; font-size: 13px; margin: 10px 0; overflow-x: auto; }
+        .button-group { display: flex; gap: 10px; flex-wrap: wrap; }
+        .button-group button { flex: 1; min-width: 120px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f8f9fa; font-weight: 600; }
+        .loading { display: inline-block; width: 16px; height: 16px; border: 2px solid #f3f3f3; border-top: 2px solid #007bff; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>🍣 KY SUSHI - Payment Integration Test</h1>
+            <p>Local testing interface for Click online payment integration</p>
+        </div>
+
+        <!-- Configuration Section -->
+        <div class="card">
+            <h2>⚙️ Configuration</h2>
+            <div class="form-group">
+                <label for="apiUrl">API Base URL:</label>
+                <input type="text" id="apiUrl" value="http://localhost:8000">
+            </div>
+            <div class="form-group">
+                <label for="initData">X-Telegram-Init-Data:</label>
+                <input type="text" id="initData" value="dev_mode" placeholder="dev_mode or actual Telegram init data">
+            </div>
+            <div class="info">
+                💡 For local development, use <code>dev_mode</code> as X-Telegram-Init-Data header. This will use a test Telegram user (ID: 999999999).
+            </div>
+        </div>
+
+        <!-- Order Management -->
+        <div class="card">
+            <h2>📦 Order Management</h2>
+            <div class="form-group">
+                <label for="cartOrderId">Cart Order ID:</label>
+                <input type="number" id="cartOrderId" placeholder="Leave empty to fetch from server">
+                <small style="color: #666; display: block; margin-top: 5px;">Fetched cart order ID will be saved here</small>
+            </div>
+            
+            <div class="button-group">
+                <button onclick="getCart()">Get Cart</button>
+                <button onclick="addToCart()">Add Product (ID: 1)</button>
+                <button onclick="updateDelivery()">Update Delivery Info</button>
+            </div>
+            
+            <div id="cartInfo" style="margin-top: 15px;"></div>
+        </div>
+
+        <!-- Payment Initiation -->
+        <div class="card">
+            <h2>💳 Payment Initiation</h2>
+            <div class="form-group">
+                <label for="paymentOrderId">Order ID for Payment:</label>
+                <input type="number" id="paymentOrderId" placeholder="Leave empty to use cart order ID">
+            </div>
+            
+            <button onclick="initiatePayment()">Initiate Payment</button>
+            
+            <div id="paymentInitResponse" style="margin-top: 15px;"></div>
+        </div>
+
+        <!-- Payment Callback Simulation -->
+        <div class="card">
+            <h2>🔄 Simulate Payment Callback</h2>
+            <p style="margin-bottom: 15px; color: #666;">For local testing, simulate a payment callback with mock data:</p>
+            
+            <div class="form-group">
+                <label for="callbackOrderId">Order ID:</label>
+                <input type="number" id="callbackOrderId" placeholder="Order ID">
+            </div>
+            <div class="form-group">
+                <label for="callbackAmount">Amount (sum):</label>
+                <input type="number" id="callbackAmount" placeholder="Amount">
+            </div>
+            <div class="form-group">
+                <label for="callbackStatus">Status Code:</label>
+                <select id="callbackStatus" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                    <option value="2">2 - Confirmed (Success)</option>
+                    <option value="1">1 - Preparing</option>
+                    <option value="0">0 - Error/Cancelled</option>
+                </select>
+            </div>
+            
+            <button onclick="simulateCallback()">Send Mock Callback</button>
+            
+            <div id="callbackResponse" style="margin-top: 15px;"></div>
+        </div>
+
+        <!-- Payment Status Check -->
+        <div class="card">
+            <h2>📊 Check Payment Status</h2>
+            <div class="form-group">
+                <label for="statusOrderId">Order ID:</label>
+                <input type="number" id="statusOrderId" placeholder="Order ID">
+            </div>
+            
+            <button onclick="checkPaymentStatus()">Check Status</button>
+            
+            <div id="statusResponse" style="margin-top: 15px;"></div>
+        </div>
+
+        <!-- Logs -->
+        <div class="card">
+            <h2>📋 Logs</h2>
+            <div id="logs" style="background: #f8f9fa; padding: 12px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">Ready...</div>
+            <button onclick="clearLogs()" style="margin-top: 10px;">Clear Logs</button>
+        </div>
+    </div>
+
+    <script>
+        const logsDiv = document.getElementById('logs');
+        
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : type === 'request' ? '📤' : '📝';
+            const logEntry = `[${timestamp}] ${prefix} ${message}\n`;
+            logsDiv.textContent = logEntry + logsDiv.textContent;
+        }
+        
+        function clearLogs() {
+            logsDiv.textContent = 'Ready...';
+        }
+        
+        function showResponse(elementId, data, isError = false) {
+            const el = document.getElementById(elementId);
+            el.innerHTML = `
+                <div class="${isError ? 'error' : 'success'}">
+                    <strong>${isError ? 'Error' : 'Success'}:</strong><br>
+                    <div class="code">${JSON.stringify(data, null, 2)}</div>
+                </div>
+            `;
+        }
+        
+        async function fetchAPI(endpoint, method = 'GET', body = null) {
+            const apiUrl = document.getElementById('apiUrl').value;
+            const initData = document.getElementById('initData').value;
+            const url = `${apiUrl}${endpoint}`;
+            
+            log(`${method} ${url}`, 'request');
+            
+            try {
+                const response = await fetch(url, {
+                    method: method,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Telegram-Init-Data': initData,
+                    },
+                    body: body ? JSON.stringify(body) : null,
+                });
+                
+                const data = await response.json();
+                log(`Response: ${response.status} - ${JSON.stringify(data)}`);
+                return { success: response.ok, data, status: response.status };
+            } catch (error) {
+                log(`Error: ${error.message}`, 'error');
+                return { success: false, error: error.message };
+            }
+        }
+        
+        async function getCart() {
+            const result = await fetchAPI('/api/orders/cart/');
+            if (result.success) {
+                const cart = result.data.cart;
+                document.getElementById('cartOrderId').value = cart.id || '';
+                showResponse('cartInfo', cart);
+                log(`Cart ID: ${cart.id || 'N/A'}`, 'success');
+            } else {
+                showResponse('cartInfo', result.error || result.data, true);
+            }
+        }
+        
+        async function addToCart() {
+            const result = await fetchAPI('/api/orders/cart/', 'POST', {
+                product_id: 1,
+                quantity: 1
+            });
+            if (result.success) {
+                log('Product added to cart', 'success');
+                const cart = result.data.cart;
+                document.getElementById('cartOrderId').value = cart.id || '';
+                showResponse('cartInfo', cart);
+            } else {
+                showResponse('cartInfo', result.error || result.data, true);
+            }
+        }
+        
+        async function updateDelivery() {
+            const cartId = document.getElementById('cartOrderId').value || '1';
+            const result = await fetchAPI('/api/orders/cart/', 'PATCH', {
+                delivery_type: 'delivery',
+                address_text: '123 Main Street, Apartment 5'
+            });
+            if (result.success) {
+                log('Delivery info updated', 'success');
+                showResponse('cartInfo', result.data);
+            } else {
+                showResponse('cartInfo', result.error || result.data, true);
+            }
+        }
+        
+        async function initiatePayment() {
+            let orderId = document.getElementById('paymentOrderId').value;
+            if (!orderId) {
+                orderId = document.getElementById('cartOrderId').value;
+            }
+            
+            if (!orderId) {
+                showResponse('paymentInitResponse', 'Order ID is required', true);
+                log('Order ID is required', 'error');
+                return;
+            }
+            
+            const result = await fetchAPI('/api/orders/initiate-payment/', 'POST', {
+                order_id: parseInt(orderId)
+            });
+            
+            if (result.success && result.data.success) {
+                log(`Payment initiated successfully. Transaction ID: ${result.data.transaction_id}`, 'success');
+                showResponse('paymentInitResponse', result.data);
+                
+                // Auto-fill callback form
+                document.getElementById('callbackOrderId').value = orderId;
+            } else {
+                showResponse('paymentInitResponse', result.data || result.error, true);
+            }
+        }
+        
+        async function simulateCallback() {
+            const orderId = document.getElementById('callbackOrderId').value;
+            const amount = document.getElementById('callbackAmount').value;
+            const statusCode = document.getElementById('callbackStatus').value;
+            
+            if (!orderId || !amount) {
+                showResponse('callbackResponse', 'Order ID and Amount are required', true);
+                log('Order ID and Amount are required', 'error');
+                return;
+            }
+            
+            const result = await fetchAPI('/api/orders/payment-callback/', 'POST', {
+                click_trans_id: Math.floor(Math.random() * 1000000000),
+                merchant_trans_id: orderId,
+                amount: amount,
+                status: statusCode
+            });
+            
+            if (result.success) {
+                log('Payment callback processed successfully', 'success');
+                showResponse('callbackResponse', result.data);
+            } else {
+                showResponse('callbackResponse', result.data || result.error, true);
+            }
+        }
+        
+        async function checkPaymentStatus() {
+            const orderId = document.getElementById('statusOrderId').value;
+            
+            if (!orderId) {
+                showResponse('statusResponse', 'Order ID is required', true);
+                log('Order ID is required', 'error');
+                return;
+            }
+            
+            const result = await fetchAPI(`/api/orders/payment-status/${orderId}/`);
+            
+            if (result.success) {
+                log(`Payment status: ${result.data.payment_status}`, 'success');
+                showResponse('statusResponse', result.data);
+            } else {
+                showResponse('statusResponse', result.data || result.error, true);
+            }
+        }
+        
+        // Initialize
+        log('Payment Integration Test loaded. Ready for testing.');
+    </script>
+</body>
+</html>

@@ -1,73 +1,14 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
-*.so
-
-# Virtual environments
-.env
-.venv
-env/
 venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Django stuff
-*.log
-local_settings.py
+.env
 db.sqlite3
-db.sqlite3-journal
 media/
 staticfiles/
-
-# If используешь collectstatic в отдельную папку
-static/
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# MyPy / type checkers
-.mypy_cache/
-.dmypy.json
-dmypy.json
-.pytype/
-
-# Django / IDE specific
-*.pot
-*.pyc
-*.pyo
-*.pyd
-*.mo
-
-# VSCode
-.vscode/
-
-# PyCharm
-.idea/
-
-# OS files
 .DS_Store
-Thumbs.db
-
-# Env/config secrets
-*.env
-*.env.*
-.envrc
+broker/
+celerybeat-schedule
+celerybeat.pid
+*.log

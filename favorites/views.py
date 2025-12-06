@@ -16,6 +16,19 @@ class MiniAppUserMixin:
     
     def _get_telegram_user(self, request):
         init_data = request.headers.get("X-Telegram-Init-Data", "")
+        
+        # Development mode support
+        if init_data == "dev_mode":
+            tg_user, _ = TelegramUser.objects.get_or_create(
+                telegram_id=999999999,
+                defaults={
+                    "username": "dev_user",
+                    "first_name": "Development",
+                    "last_name": "User",
+                },
+            )
+            return tg_user
+        
         data = validate_init_data(init_data)
         if not data or "user" not in data:
             print("MiniAppUserMixin: invalid init_data, user not found")

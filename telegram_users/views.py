@@ -56,12 +56,24 @@ class UserProfileView(APIView):
         # Получаем init_data из заголовка
         init_data = request.headers.get("X-Telegram-Init-Data", "")
         
-        data = validate_init_data(init_data)
-        if not data or "user" not in data:
-            return Response({"detail": "Invalid init data"}, status=status.HTTP_400_BAD_REQUEST)
+        # Development mode support
+        if init_data == "dev_mode":
+            tg_user, _ = TelegramUser.objects.get_or_create(
+                telegram_id=999999999,
+                defaults={
+                    "username": "dev_user",
+                    "first_name": "Development",
+                    "last_name": "User",
+                },
+            )
+            telegram_id = 999999999
+        else:
+            data = validate_init_data(init_data)
+            if not data or "user" not in data:
+                return Response({"detail": "Invalid init data"}, status=status.HTTP_400_BAD_REQUEST)
 
-        user_payload = data["user"]
-        telegram_id = user_payload["id"]
+            user_payload = data["user"]
+            telegram_id = user_payload["id"]
         
         try:
             tg_user = TelegramUser.objects.get(telegram_id=telegram_id)
