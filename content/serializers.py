@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ContentPage, Branch, Promotion, Vacancy, Notification
+from .models import ContentPage, Branch, Promotion, Vacancy, Notification, UserNotification
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -46,3 +46,11 @@ class VacancySerializer(serializers.ModelSerializer):
     class Meta:
         model = Vacancy
         fields = '__all__'
+
+
+class UserNotificationSerializer(serializers.ModelSerializer):
+    order_number = serializers.CharField(source='order.order_number', read_only=True)
+    
+    class Meta:
+        model = UserNotification
+        fields = ['id', 'title', 'message', 'notification_type', 'order', 'order_number', 'is_read', 'created_at']

@@ -16,6 +16,7 @@ urlpatterns = [
     path("api/addresses/", include("addresses.urls")),
     path("api/favorites/", include("favorites.urls")),
     path("api/content/", include("content.urls")),
+    path("api/qr-menu/", include("qr_menu.urls")),
 ]
 
 if settings.DEBUG:

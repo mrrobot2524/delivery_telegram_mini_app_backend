@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 from django.conf import settings
-
+from django.utils import timezone
 from asgiref.sync import sync_to_async
 
 from telegram import (
@@ -10,11 +10,14 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     WebAppInfo,
+    MenuButtonWebApp,
+    LabeledPrice, # Для инвойсов
 )
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    PreCheckoutQueryHandler, # Импорт обработчика предоплаты
     ContextTypes,
     filters,
 )
@@ -72,21 +75,25 @@ class Command(BaseCommand):
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(MessageHandler(filters.CONTACT, self.save_contact))
 
-        application.add_handler(CommandHandler("menu", self.menu))
+        # Обработчик кнопки "Начать" - делает то же самое, что и /start
         application.add_handler(
-            MessageHandler(filters.TEXT & filters.Regex(r"^🍣 Меню$"), self.menu)
+            MessageHandler(filters.TEXT & filters.Regex(r"^🚀 Начать$"), self.start)
         )
 
+        # Обработчики оплаты (Payme / Telegram Payments)
+        application.add_handler(PreCheckoutQueryHandler(self.precheckout_callback))
         application.add_handler(
-            MessageHandler(filters.TEXT & filters.Regex(r"^🧺 Корзина$"), self.cart)
-        )
-
-        # выбор категорий/товаров по тексту
-        application.add_handler(
-            MessageHandler(filters.TEXT, self.category_or_product_by_text)
+            MessageHandler(filters.SUCCESSFUL_PAYMENT, self.successful_payment_callback)
         )
 
         application.run_polling()
+
+        # Старые обработчики отключены
+        # application.add_handler(CommandHandler("menu", self.menu))
+        # application.add_handler(
+        #    MessageHandler(filters.TEXT & filters.Regex(r"^🍣 Меню$"), self.menu)
+        # )
+
 
     # ============== /start ==============
 
@@ -111,6 +118,15 @@ class Command(BaseCommand):
                     reply_markup=keyboard,
                 )
             return
+            
+        # Устанавливаем кнопку "Menu" (слева от поля ввода)
+        try:
+            await context.bot.set_chat_menu_button(
+                chat_id=update.effective_chat.id,
+                menu_button=MenuButtonWebApp(text="Заказать 🍣", web_app=WebAppInfo(url=WEBAPP_URL))
+            )
+        except Exception as e:
+            print(f"Error setting menu button: {e}")
 
         # если уже зарегистрирован — показываем меню и кнопку Mini App
         await self._send_main_menu_with_webapp(update)
@@ -119,33 +135,34 @@ class Command(BaseCommand):
     async def _send_main_menu_with_webapp(self, update: Update):
         main_keyboard = ReplyKeyboardMarkup(
             [
-                [KeyboardButton(text="🍣 Меню")],
-                [KeyboardButton(text="🧺 Корзина")],
+                # Кнопка перезапуска (отправляет /start по сути)
+                [KeyboardButton(text="🚀 Начать")],
             ],
             resize_keyboard=True,
         )
 
         if update.message:
-            # обычное меню
-            await update.message.reply_text(
-                "Снова привет! Выбирай действие 👇",
-                reply_markup=main_keyboard,
-            )
-
-            # inline‑кнопка для открытия Mini App
+            # Отправляем инлайн кнопку
             inline_kb = InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton(
-                            text="Открыть мини‑приложение",
+                            text="📱 Открыть приложение",
                             web_app=WebAppInfo(url=WEBAPP_URL),
                         )
                     ]
                 ]
             )
+            
             await update.message.reply_text(
-                "Можешь пользоваться мини‑приложением 👇",
+                "Добро пожаловать в KY Sushi! 🍣\nДля заказа нажмите кнопку ниже:",
                 reply_markup=inline_kb,
+            )
+            
+            # И дублируем Reply кнопку
+            await update.message.reply_text(
+                " 👇",
+                reply_markup=main_keyboard,
             )
 
     # ============== save_contact ==============
@@ -186,121 +203,61 @@ class Command(BaseCommand):
         # после регистрации сразу показываем меню + Mini App
         await self._send_main_menu_with_webapp(update)
 
-    # ============== /menu ==============
+    # ============== PAYMENTS (PAYME) ==============
 
-    async def menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
+    async def precheckout_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ответ на запрос пре-чекаута (проверка перед оплатой)."""
+        query = update.pre_checkout_query
+        # Если нужно, здесь можно проверить наличие товара на складе.
+        # Пока просто одобряем.
+        if query.invoice_payload != "custom-payload":
+             # В payload мы будем класть order_id. Сейчас простой пример.
+             # Хотя лучше сразу проверять order_id
+             pass
+        
+        # Одобряем платеж
+        await query.answer(ok=True)
 
-        is_registered = await sync_to_async(
-            TelegramUser.objects.filter(
-                telegram_id=user.id,
-                phone_number__isnull=False,
-            ).exists
-        )()
-        if not is_registered:
-            if update.message:
-                await update.message.reply_text("Сначала зарегистрируйся через /start 📲")
-            return
+    async def successful_payment_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка успешного платежа."""
+        message = update.message
+        successful_payment = message.successful_payment
+        
+        # Получаем order_id из payload
+        payload = successful_payment.invoice_payload
+        
+        # Пытаемся найти и обновить заказ
+        try:
+            order_id = int(payload)
+            # Обновляем статус заказа в БД асинхронно
+            order = await sync_to_async(Order.objects.get)(id=order_id)
+            
+            # Меняем статус на paid
+            order.payment_status = "paid"
+            order.payment_method = "online" # Payme
+            order.transaction_id = successful_payment.provider_payment_charge_id
+            # Если статус был new, можно оставить new или поменять
+            order.paid_at = timezone.now()
+            await sync_to_async(order.save)()
+            
+            # Отправляем подтверждение пользователю
+            # Формируем ссылку на чек
+            # Хак для devtunnels: меняем порт 5173 на 8000
+            api_base = WEBAPP_URL.replace("-5173", "-8000").rstrip('/')
+            receipt_url = f"{api_base}/api/orders/{order_id}/receipt/"
 
-        categories = await sync_to_async(list)(
-            Category.objects.filter(is_active=True)
-        )
-        if not categories:
-            if update.message:
-                await update.message.reply_text("Пока нет доступных категорий.")
-            return
-
-        keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton(text=cat.name)] for cat in categories],
-            resize_keyboard=True,
-        )
-
-        if update.message:
             await update.message.reply_text(
-                "Выбери категорию:",
-                reply_markup=keyboard,
+                f"✅ Оплата прошла успешно! Ваш заказ #{order_id} принят в работу. Спасибо!\n\n"
+                f"📄 Ваш чек: {receipt_url}"
             )
-
-    # ============== категории / товары по тексту ==============
-
-    async def category_or_product_by_text(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        if not update.message:
-            return
-
-        text = (update.message.text or "").strip()
-        if not text or text.startswith("/"):
-            return
-
-        user = update.effective_user
-
-        # 1. пробуем как категорию
-        category = await sync_to_async(
-            Category.objects.filter(name=text, is_active=True).first
-        )()
-        if category:
-            products = await sync_to_async(list)(
-                Product.objects.filter(category=category, is_active=True)
-            )
-            if not products:
-                await update.message.reply_text(
-                    f"В категории «{category.name}» пока нет товаров."
-                )
-                return
-
-            keyboard = ReplyKeyboardMarkup(
-                [[KeyboardButton(text=prod.name)] for prod in products],
-                resize_keyboard=True,
-            )
+            
+            # TODO: Можно отправить уведомление админу или на кухню
+            
+        except (ValueError, Order.DoesNotExist):
             await update.message.reply_text(
-                f"Выбери товар категории «{category.name}»:",
-                reply_markup=keyboard,
+                "✅ Оплата прошла, но мы не смогли найти номер заказа. Свяжитесь с поддержкой."
             )
-            return
+        except Exception as e:
+            print(f"Payment Error: {e}")
 
-        # 2. пробуем как товар
-        product = await sync_to_async(
-            Product.objects.filter(name=text, is_active=True).first
-        )()
-        if not product:
-            return
-
-        tg_user = await self.get_or_create_telegram_user(user)
-        await self.add_product_to_cart(tg_user, product)
-
-        await update.message.reply_text(
-            f"Товар «{product.name}» добавлен в корзину 🧺"
-        )
-
-    # ============== корзина ==============
-
-    async def cart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        tg_user = await sync_to_async(
-            TelegramUser.objects.filter(
-                telegram_id=user.id,
-                phone_number__isnull=False,
-            ).first
-        )()
-        if not tg_user:
-            await update.message.reply_text("Сначала зарегистрируйся через /start 📲")
-            return
-
-        cart = await sync_to_async(
-            lambda: Order.objects.filter(user=tg_user, status="cart")
-            .prefetch_related("items__product")
-            .first()
-        )()
-        if not cart or not cart.items.exists():
-            await update.message.reply_text("Твоя корзина пуста 🧺")
-            return
-
-        lines = ["Твоя корзина:"]
-        for item in cart.items.all():
-            lines.append(
-                f"• {item.product.name} x{item.quantity} = {item.total_price} сум"
-            )
-        lines.append(f"\nИтого: {cart.total_price} сум")
-
-        await update.message.reply_text("\n".join(lines))
+    # Старые методы menu, cart и т.д. можно удалить, они больше не используются

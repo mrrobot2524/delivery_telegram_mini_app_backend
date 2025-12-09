@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import Order, OrderItem, PromoCode, Promotion, OrderItemCancellationRequest, OrderCancellationRequest
+from .models import Order, OrderItem, PromoCode, Promotion, OrderItemCancellationRequest, OrderCancellationRequest, RestaurantSettings
 
 
 class OrderItemInline(admin.TabularInline):
@@ -33,14 +33,18 @@ class OrderAdmin(admin.ModelAdmin):
         "delivery_type",
         "payment_method_badge",
         "payment_status_badge",
+        "table", # Добавлено
+        "transaction_id",
+        "view_receipt_button", # Добавлено
         "estimated_time",
         "address_short",
         "total_price_format",
         "created_at",
+        
     )
     list_filter = ("status", "delivery_type", "created_at")
-    search_fields = ("id", "user__username", "user__first_name", "user__phone_number", "address_text")
-    readonly_fields = ("created_at", "updated_at", "total_price_display", "final_price_display", "map_view")
+    search_fields = ("id", "user__username", "user__first_name", "user__phone_number", "address_text", "transaction_id")
+    readonly_fields = ("created_at", "updated_at", "total_price_display", "final_price_display", "map_view", "view_receipt_button", "delivery_price_display") # Добавлено
     inlines = [OrderItemInline]
     date_hierarchy = 'created_at'
     list_per_page = 20
@@ -50,7 +54,7 @@ class OrderAdmin(admin.ModelAdmin):
     fieldsets = (
         ("Клиент и Статус", {
             "fields": (
-                ("user", "user_link_readonly"), 
+                ("user", "user_link_readonly"),
                 "status", 
                 "estimated_time",
                 "created_at"
@@ -58,7 +62,8 @@ class OrderAdmin(admin.ModelAdmin):
         }),
         ("📍 Доставка и Адрес", {
             "fields": (
-                "delivery_type", 
+                "delivery_type",
+                "table", # Добавлено
                 "address_text", 
                 ("latitude", "longitude"),
                 "map_view"
@@ -68,8 +73,11 @@ class OrderAdmin(admin.ModelAdmin):
         ("💰 Оплата и Скидки", {
             "fields": (
                 ("payment_method", "payment_status", "paid_at"),
+                "transaction_id",
+                "view_receipt_button",
                 "promo_code", 
-                ("total_price_display", "discount_amount", "final_price_display"),
+                ("total_price_display", "discount_amount", "delivery_price", "final_price_display"),
+                "distance_km",
                 "comment"
             )
         }),
@@ -91,6 +99,14 @@ class OrderAdmin(admin.ModelAdmin):
             'https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js',
         )
 
+    def view_receipt_button(self, obj):
+        url = f"/api/orders/{obj.id}/receipt/"
+        return format_html(
+            '<a href="{}" target="_blank" class="button" style="background-color: #17a2b8; color: white; padding: 4px 10px; border-radius: 4px; text-decoration: none;">🧾 Открыть чек</a>',
+            url
+        )
+    view_receipt_button.short_description = "Просмотр чека"
+    view_receipt_button.allow_tags = True
 
     actions = ["make_preparing", "make_delivering", "make_done", "make_canceled", "mark_as_paid", "generate_receipt"]
 
@@ -282,6 +298,11 @@ class OrderAdmin(admin.ModelAdmin):
     def final_price_display(self, obj):
         return f"{int(obj.final_price):,} сум".replace(",", " ")
     final_price_display.short_description = "Итого к оплате"
+
+    def delivery_price_display(self, obj):
+        val = obj.delivery_price or 0
+        return f"{int(val):,} сум".replace(",", " ")
+    delivery_price_display.short_description = "Доставка"
     
     def map_view(self, obj):
         if not obj.latitude or not obj.longitude:
@@ -418,7 +439,8 @@ class OrderItemAdmin(admin.ModelAdmin):
         return "-"
     order_link.short_description = 'Заказ'
     order_link.admin_order_field = 'order__id'
-
+    
+    
 
 @admin.register(PromoCode)
 class PromoCodeAdmin(admin.ModelAdmin):
@@ -585,3 +607,29 @@ class OrderCancellationRequestAdmin(admin.ModelAdmin):
         else:
             super().save_model(request, obj, form, change)
         return self.readonly_fields
+
+@admin.register(RestaurantSettings)
+class RestaurantSettingsAdmin(admin.ModelAdmin):
+    list_display = ("__str__", "opening_time", "closing_time", "is_manual_mode", "is_open_manual")
+    fieldsets = (
+        ("Время работы", {
+            "fields": ("opening_time", "closing_time")
+        }),
+        ("Ручное управление", {
+            "fields": ("is_manual_mode", "is_open_manual", "closed_message"),
+            "description": "Если включен ручной режим, расписание игнорируется."
+        }),
+        ("Настройки доставки (Динамическая)", {
+            "fields": ("restaurant_lat", "restaurant_lng", "delivery_base_price", "delivery_base_km", "delivery_price_per_km", "delivery_price"),
+            "description": "Настройка динамического расчета стоимости доставки."
+        }),
+    )
+
+    def has_add_permission(self, request):
+        # Только одна настройка
+        if self.model.objects.exists():
+            return False
+        return True
+
+
+

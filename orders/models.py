@@ -158,6 +158,7 @@ class Order(models.Model):
     DELIVERY_CHOICES = (
         ("pickup", "Самовывоз"),
         ("delivery", "Доставка"),
+        ("dine_in", "В заведении"),
     )
 
     user = models.ForeignKey(
@@ -186,6 +187,17 @@ class Order(models.Model):
     latitude = models.FloatField(null=True, blank=True)
     longitude = models.FloatField(null=True, blank=True)
 
+    # Для заказов в заведении
+    table = models.ForeignKey(
+        "qr_menu.QRTable",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name="Столик (QR)",
+        related_name="orders",
+        help_text="Столик (для заказов в заведении)"
+    )
+
     # Промокод и скидки
     promo_code = models.ForeignKey(
         PromoCode,
@@ -200,6 +212,19 @@ class Order(models.Model):
         decimal_places=2,
         default=0,
         help_text="Сумма скидки",
+    )
+    
+    # Расчет доставки
+    delivery_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Рассчитанная стоимость доставки",
+    )
+    distance_km = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Расстояние доставки в км",
     )
     
     # Дополнительные поля
@@ -233,6 +258,12 @@ class Order(models.Model):
         default="pending",
         help_text="Статус оплаты",
     )
+    transaction_id = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="ID транзакции платежной системы (Payme/Click)",
+    )
     paid_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -258,9 +289,11 @@ class Order(models.Model):
 
     @property
     def final_price(self):
-        """Итоговая сумма с учетом скидки"""
+        """Итоговая сумма с учетом скидки и доставки"""
         total = self.total_price
-        return max(total - self.discount_amount, 0)
+        # Добавляем доставку, если она есть
+        delivery = self.delivery_price or 0
+        return max(total - self.discount_amount, 0) + delivery
 
     def apply_promo_code(self, promo_code):
         """Применение промокода к заказу"""
@@ -293,6 +326,16 @@ class OrderItem(models.Model):
         Product,
         on_delete=models.PROTECT,
         related_name="order_items",
+        null=True,
+        blank=True,
+    )
+    qr_product = models.ForeignKey(
+        "qr_menu.QROnlyProduct",
+        on_delete=models.PROTECT,
+        related_name="order_items",
+        null=True,
+        blank=True,
+        verbose_name="Товар (QR)",
     )
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(
@@ -545,3 +588,74 @@ class ClickTransaction(models.Model):
     
     def __str__(self):
         return f"Click #{self.click_trans_id} - Order #{self.order.id} ({self.get_status_display()})"
+
+class RestaurantSettings(models.Model):
+    """
+    Глобальные настройки ресторана (Время работы, Доставка и т.д.)
+    Реализует паттерн Singleton (одна запись в БД)
+    """
+    opening_time = models.TimeField(default="10:00", help_text="Время открытия")
+    closing_time = models.TimeField(default="23:00", help_text="Время закрытия")
+    
+    # Можно добавить возможность ручного управления
+    is_manual_mode = models.BooleanField(
+        default=False, 
+        help_text="Использовать ручной режим (игнорировать время)"
+    )
+    is_open_manual = models.BooleanField(
+        default=True, 
+        help_text="Открыто ли сейчас (работает только если включен ручной режим)"
+    )
+    
+    closed_message = models.TextField(
+        default="Ресторан закрыт. Мы работаем с 10:00 до 23:00",
+        help_text="Сообщение, которое видит клиент, когда ресторан закрыт"
+    )
+    
+    delivery_price = models.DecimalField(
+        default=15000, 
+        max_digits=10, 
+        decimal_places=2, 
+        help_text="Стоимость доставки (сум) - устаревшее, используйте delivery_base_price"
+    )
+
+    # Настройки динамической доставки
+    restaurant_lat = models.FloatField(
+        default=41.311081, 
+        help_text="Широта ресторана (для расчета расстояния)"
+    )
+    restaurant_lng = models.FloatField(
+        default=69.240562, 
+        help_text="Долгота ресторана (для расчета расстояния)"
+    )
+    
+    delivery_base_price = models.DecimalField(
+        default=15000, 
+        max_digits=10, 
+        decimal_places=2, 
+        help_text="Базовая цена доставки (до X км)"
+    )
+    delivery_base_km = models.FloatField(
+        default=2.0, 
+        help_text="Базовое расстояние (км), включенное в базовую цену"
+    )
+    delivery_price_per_km = models.DecimalField(
+        default=2000, 
+        max_digits=10, 
+        decimal_places=2, 
+        help_text="Цена за каждый дополнительный км"
+    )
+    
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return "Настройки ресторана"
+
+    class Meta:
+        verbose_name = "Настройки ресторана"
+        verbose_name_plural = "Настройки ресторана"
+
+
+

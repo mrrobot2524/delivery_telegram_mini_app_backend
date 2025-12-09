@@ -1,13 +1,14 @@
 from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
-from .models import ContentPage, Branch, Promotion, Vacancy, Notification
+from .models import ContentPage, Branch, Promotion, Vacancy, Notification, UserNotification
 from .serializers import (
     ContentPageSerializer, 
     BranchSerializer, 
     PromotionSerializer, 
     VacancySerializer,
-    NotificationSerializer
+    NotificationSerializer,
+    UserNotificationSerializer
 )
 
 
@@ -15,6 +16,44 @@ class NotificationListView(ListAPIView):
     """Получение списка активных уведомлений"""
     queryset = Notification.objects.filter(is_active=True)
     serializer_class = NotificationSerializer
+
+
+class UserNotificationListView(ListAPIView):
+    """API для получения персональных уведомлений пользователя"""
+    serializer_class = UserNotificationSerializer
+    
+    def get_queryset(self):
+        # Получаем telegram_id из query params или body (для POST запросов, если нужно)
+        # Обычно GET запросы используют query params
+        telegram_id = self.request.query_params.get('telegram_id')
+        
+        # Если используем initData, можно попробовать достать оттуда, но проще передать telegram_id явно
+        if not telegram_id:
+            # Попробуем достать из body для совместимости, если вдруг POST запрос (хотя это ListAPIView -> GET)
+            # Или может быть initData парсится где-то в middleware и user auth
+            pass
+
+        if not telegram_id:
+            return UserNotification.objects.none()
+        
+        return UserNotification.objects.filter(
+            telegram_id=telegram_id
+        ).select_related('order')[:50]  # Последние 50 уведомлений
+
+
+@api_view(['POST'])
+def mark_user_notifications_read(request):
+    """Пометить все уведомления пользователя как прочитанные"""
+    telegram_id = request.data.get('telegram_id')
+    if not telegram_id:
+        return Response({'error': 'telegram_id is required'}, status=400)
+        
+    UserNotification.objects.filter(
+        telegram_id=telegram_id,
+        is_read=False
+    ).update(is_read=True)
+    
+    return Response({'status': 'ok'})
 
 
 class ContentPageDetailView(RetrieveAPIView):

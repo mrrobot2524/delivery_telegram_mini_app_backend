@@ -1,5 +1,14 @@
 from django.contrib import admin
-from .models import ContentPage, Branch, Promotion, Vacancy, Notification
+from .models import ContentPage, Branch, Promotion, Vacancy, Notification, UserNotification
+
+
+@admin.register(UserNotification)
+class UserNotificationAdmin(admin.ModelAdmin):
+    list_display = ['title', 'telegram_id', 'notification_type', 'is_read', 'created_at']
+    list_filter = ['notification_type', 'is_read', 'created_at']
+    search_fields = ['title', 'message', 'telegram_id']
+    readonly_fields = ['created_at']
+    date_hierarchy = 'created_at'
 
 
 @admin.register(Notification)

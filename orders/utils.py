@@ -2,6 +2,8 @@
 Utility functions for promo codes and orders
 """
 from decimal import Decimal
+import math
+from django.db import models
 from django.utils import timezone
 from .models import PromoCode, Order
 
@@ -100,10 +102,80 @@ def get_order_statistics(user=None):
 
 def is_restaurant_open():
     """
-    Проверка времени работы ресторана (10:00 - 23:00)
+    Проверка времени работы ресторана (через настройки в БД)
     """
-    now = timezone.localtime(timezone.now())
-    # Время работы: с 10:00 до 23:00
-    if 10 <= now.hour < 23:
+    # Local import to avoid circular dependency
+    from .models import RestaurantSettings
+
+    # Получаем настройки (или создаем дефолтные при первом вызове)
+    settings, _ = RestaurantSettings.objects.get_or_create(pk=1)
+
+    # Ручной режим
+    if settings.is_manual_mode:
+        if settings.is_open_manual:
+             return True, "Мы открыты"
+        else:
+             return False, settings.closed_message
+
+    now = timezone.localtime(timezone.now()).time()
+
+    # Проверка интервала
+    # Если время открытия < времени закрытия (например 10:00 - 23:00)
+    if settings.opening_time < settings.closing_time:
+        is_open = settings.opening_time <= now <= settings.closing_time
+    else:
+        # Ресторан работает через полночь (например 18:00 - 02:00)
+        is_open = now >= settings.opening_time or now <= settings.closing_time
+
+    if is_open:
         return True, "Мы открыты"
-    return False, "Ресторан закрыт. Мы работаем с 10:00 до 23:00"
+    
+    return False, settings.closed_message
+
+def get_haversine_distance(lat1, lon1, lat2, lon2):
+    """
+    Вычисляет расстояние между двумя точками (в км).
+    """
+    R = 6371  # Радиус Земли в км
+    d_lat = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+    a = (math.sin(d_lat / 2) * math.sin(d_lat / 2) +
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
+         math.sin(d_lon / 2) * math.sin(d_lon / 2))
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+def calculate_delivery_cost(user_lat, user_lng):
+    """
+    Расчет стоимости доставки на основе координат.
+    Возвращает (cost, distance_km)
+    """
+    from .models import RestaurantSettings
+    settings, _ = RestaurantSettings.objects.get_or_create(pk=1)
+    
+    # Если координаты не переданы или 0, возвращаем базовую
+    if not user_lat or not user_lng:
+        return settings.delivery_base_price, 0.0
+    
+    dist = get_haversine_distance(
+        settings.restaurant_lat, settings.restaurant_lng,
+        user_lat, user_lng
+    )
+    
+    # Округляем расстояние до 1 знака после запятой для удобства
+    dist_display = round(dist, 1)
+
+    if dist <= settings.delivery_base_km:
+        return settings.delivery_base_price, dist_display
+    
+    # Если расстояние больше базового
+    extra_km = dist - settings.delivery_base_km
+    extra_cost = Decimal(extra_km) * settings.delivery_price_per_km
+    
+    total_cost = settings.delivery_base_price + extra_cost
+    
+    # Округляем цену до 100 сум
+    # Например: 15432 -> 15500 (ceil)
+    total_cost = math.ceil(total_cost / 100) * 100
+    
+    return Decimal(total_cost), dist_display

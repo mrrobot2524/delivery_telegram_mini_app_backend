@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Order, OrderItem, PromoCode, Promotion, OrderItemCancellationRequest
 from menu.serializers import ProductSerializer
+from qr_menu.serializers import QROnlyProductSerializer
 
 
 class PromoCodeSerializer(serializers.ModelSerializer):
@@ -84,6 +85,7 @@ class OrderCancellationRequestSerializer(serializers.ModelSerializer):
 
 class OrderItemSerializer(serializers.ModelSerializer):
     product = ProductSerializer(read_only=True)
+    qr_product = QROnlyProductSerializer(read_only=True)
     cancellation_request = serializers.SerializerMethodField()
 
     class Meta:
@@ -91,6 +93,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "product",
+            "qr_product",
             "quantity",
             "price",
             "total_price",

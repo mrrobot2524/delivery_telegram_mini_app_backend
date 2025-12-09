@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'favorites',
     'content',
     'addresses',
+    'qr_menu',
     
 ]
 
@@ -166,14 +167,11 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_CREDENTIALS = True
 
 # Celery Configuration Options
-# Используем файловую систему как брокер (для разработки без RabbitMQ/Redis)
-CELERY_BROKER_URL = "filesystem://"
-CELERY_BROKER_TRANSPORT_OPTIONS = {
-    "data_folder_in": os.path.join(BASE_DIR, "broker", "in"),
-    "data_folder_out": os.path.join(BASE_DIR, "broker", "out"),
-    "data_folder_processed": os.path.join(BASE_DIR, "broker", "processed"),
-}
-CELERY_RESULT_BACKEND = 'django-db'
+# Настройка для RabbitMQ (для продакшена)
+# По умолчанию используем локальный RabbitMQ.
+# В docker-compose или на сервере можно переопределить через переменную окружения.
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "amqp://guest:guest@localhost:5672//")
+CELERY_RESULT_BACKEND = "django-db"
 CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -185,3 +183,7 @@ CLICK_MERCHANT_ID = os.getenv("CLICK_MERCHANT_ID")
 CLICK_SECRET_KEY = os.getenv("CLICK_SECRET_KEY")
 CLICK_MERCHANT_USER_ID = os.getenv("CLICK_MERCHANT_USER_ID")
 CLICK_IS_MOCK = os.getenv("CLICK_IS_MOCK", "True") == "True"
+
+# Payme (Telegram Payments) Settings
+# Тестовый токен по умолчанию, в проде переопределить через .env
+PAYME_PROVIDER_TOKEN = os.getenv("PAYME_PROVIDER_TOKEN", "371317599:TEST:1765199362697")

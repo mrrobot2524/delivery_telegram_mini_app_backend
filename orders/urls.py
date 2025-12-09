@@ -17,6 +17,8 @@ from .views import (
     PaymentCallbackView,
     CheckPaymentStatusView,
     MockPaymentCallbackView,
+    OrderReceiptView,
+    CalculateDeliveryView,
 )
 
 urlpatterns = [
@@ -24,11 +26,13 @@ urlpatterns = [
     path("cart/", CartView.as_view()),
     path("cart/item/", CartItemView.as_view()),
     path("checkout/", CheckoutView.as_view()),
+    path("calculate-delivery/", CalculateDeliveryView.as_view(), name="calculate_delivery"),
     
     # Заказы
     path("my/", MyOrdersView.as_view()),
     path("<int:pk>/delete/", DeleteMyOrderView.as_view()),
     path("poll/<int:order_id>/", PollOrderStatusView.as_view(), name="poll_order_status"), # Added poll endpoint
+    path("<int:order_id>/receipt/", OrderReceiptView.as_view(), name="order_receipt"),
     
     # Отмена заказов и товаров
     path("cancel_item/", CancelOrderItemView.as_view()),  # Прямая отмена (старый метод)

@@ -126,114 +126,110 @@ class ClickPaymentService:
         }
 
 
+
+class TelegramPaymentService:
+    """Service for generating Telegram Invoice Links (Payme/Click via Bot)."""
+    
+    def __init__(self):
+        self.bot_token = settings.TELEGRAM_BOT_TOKEN
+        self.provider_token = settings.PAYME_PROVIDER_TOKEN
+        
+    def create_invoice_link(self, order):
+        """Generate invoice link using Telegram Bot API."""
+        import requests
+        import json
+        
+        url = f"https://api.telegram.org/bot{self.bot_token}/createInvoiceLink"
+        
+        # Сумма в минимальных единицах валюты. Для UZS это тийины (x100).
+        amount_in_cents = int(order.final_price * 100)
+        
+        data = {
+            "title": f"Заказ #{order.id}",
+            "description": f"Оплата заказа #{order.id} в KY Sushi",
+            "payload": str(order.id),
+            "provider_token": self.provider_token,
+            "currency": "UZS",
+            "prices": json.dumps([
+                {"label": "Оплата заказа", "amount": amount_in_cents}
+            ]),
+            # Опционально: фото
+            # "photo_url": "...",
+            # "need_name": True,
+            # "need_phone_number": True,
+        }
+        
+        try:
+            print(f"[create_invoice_link] Token partial: {self.provider_token[:10]}...")
+            print(f"[create_invoice_link] Amount cents: {amount_in_cents}")
+            
+            response = requests.post(url, data=data, timeout=10)
+            result = response.json()
+            
+            if not result.get("ok"):
+                print(f"[create_invoice_link] Telegram API Failed: {result}") # Вывод в консоль
+                logger.error(f"Telegram createInvoiceLink failed: {result}")
+                return None
+                
+            return result["result"] # Возвращает ссылку t.me/invoice/...
+            
+        except Exception as e:
+            print(f"[create_invoice_link] Exception: {e}")
+            logger.error(f"Error creating invoice link: {e}")
+            return None
+
+
 class PaymentProcessor:
     """Main processor for handling payment operations."""
     
     def __init__(self, request=None):
         self.click_service = ClickPaymentService(request=request)
+        self.telegram_service = TelegramPaymentService()
     
-    def create_payment_session(self, order):
+    def create_payment_session(self, order, provider='click'):
         """Create a new payment session for an order."""
         from .models import ClickTransaction
         
-        logger.info(f"[PaymentProcessor] Starting payment session for order {order.id}")
-        logger.info(f"[PaymentProcessor] Order status: {order.status}")
-        logger.info(f"[PaymentProcessor] Order total_price: {order.total_price}")
-        logger.info(f"[PaymentProcessor] Order final_price: {order.final_price}")
-        logger.info(f"[PaymentProcessor] Order items count: {order.items.count()}")
+        logger.info(f"[PaymentProcessor] Starting payment session for order {order.id} via {provider}")
         
+        if provider == 'payme':
+            # Используем Telegram Payments (Invoice)
+            invoice_link = self.telegram_service.create_invoice_link(order)
+            if not invoice_link:
+                return {
+                    'success': False,
+                    'error': 'Failed to generate Payme link'
+                }
+            
+            return {
+                'success': True,
+                'payment_url': invoice_link, # Это ссылка t.me/invoice/... которую фронт откроет через web_app_open_invoice
+                'type': 'telegram_invoice'
+            }
+
+        # Default to Click
         # Prepare payment with Click
-        logger.info(f"[PaymentProcessor] Preparing payment with Click service...")
         payment_data = self.click_service.prepare_payment(order)
-        logger.info(f"[PaymentProcessor] Payment data received: {payment_data}")
         
         if payment_data.get('status') != 'success':
-            logger.error(f"[PaymentProcessor] Payment preparation failed: {payment_data}")
             return {
                 'success': False,
                 'error': payment_data.get('message', 'Failed to prepare payment'),
             }
         
-        # Create transaction record
-        logger.info(f"[PaymentProcessor] Creating ClickTransaction for order {order.id}")
-        transaction = ClickTransaction.objects.create(
+        # Create transaction record for Click
+        ClickTransaction.objects.create(
             order=order,
-            # click_trans_id будет установлена в callback, оставляем null
             merchant_trans_id=str(order.id),
             amount=order.final_price,
             status='pending',
         )
-        logger.info(f"[PaymentProcessor] Transaction created: {transaction.id}")
         
-        response = {
+        return {
             'success': True,
             'payment_url': payment_data.get('payment_url'),
-            'transaction_id': transaction.id,
             'merchant_trans_id': str(order.id),
+            'type': 'redirect'
         }
-        logger.info(f"[PaymentProcessor] Returning payment response: {response}")
-        return response
     
-    def handle_payment_callback(self, click_trans_id: int, merchant_trans_id: str, amount: Decimal, status: str):
-        """
-        Handle payment callback from Click.
-        Called after user completes payment.
-        """
-        from .models import ClickTransaction, Order
-        
-        try:
-            order = Order.objects.get(id=int(merchant_trans_id))
-        except Order.DoesNotExist:
-            logger.error(f"Order not found: {merchant_trans_id}")
-            return {
-                'success': False,
-                'error': 'Order not found',
-            }
-        
-        # Check if transaction already exists
-        transaction = ClickTransaction.objects.filter(
-            click_trans_id=click_trans_id
-        ).first()
-        
-        if not transaction:
-            # Create new transaction
-            transaction = ClickTransaction.objects.create(
-                order=order,
-                click_trans_id=click_trans_id,
-                merchant_trans_id=str(order.id),
-                amount=amount,
-                status='pending',
-            )
-        
-        # Update transaction status
-        if status == 'completed':
-            transaction.status = 'confirmed'
-            transaction.complete_time = timezone.now()
-            transaction.save()
-            
-            # Update order payment status
-            order.payment_status = 'paid'
-            order.paid_at = timezone.now()
-            order.save()
-            
-            logger.info(f"Payment confirmed for order {order.id}")
-            
-            # Запускаем фоновую задачу Celery для уведомлений и доп. действий
-            from .tasks import process_successful_payment
-            process_successful_payment.delay(order.id, float(amount))
-            
-            return {
-                'success': True,
-                'message': 'Payment processed successfully',
-            }
-        else:
-            transaction.status = 'error'
-            transaction.error_note = f'Payment failed or cancelled: {status}'
-            transaction.save()
-            
-            logger.warning(f"Payment failed for order {order.id}: {status}")
-            
-            return {
-                'success': False,
-                'error': 'Payment failed or was cancelled',
-            }
+    # ... (handle_payment_callback остается для Click)

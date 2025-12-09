@@ -3,7 +3,8 @@ from django.dispatch import receiver
 from django.conf import settings
 import requests
 import logging
-from .models import Order
+from .models import Order, OrderCancellationRequest
+from content.utils import create_user_notification
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +22,6 @@ def order_status_changed(sender, instance, created, **kwargs):
     # Но стандартный сигнал post_save не дает старое значение.
     # Поэтому мы полагаемся на то, что статус меняется осознанно.
     
-    # Для MVP будем отправлять уведомление всегда, когда статус не 'cart' и не 'new'
-    # (потому что 'new' ставится при создании заказа, пользователь и так знает).
-    
-    # UPD: Лучший способ без tracker'а - проверять статус
-    
     status_messages = {
         'preparing': "👨‍🍳 Ваш заказ принят и начал готовиться!",
         'delivering': "🚚 Курьер забрал ваш заказ и выехал к вам!",
@@ -35,13 +31,57 @@ def order_status_changed(sender, instance, created, **kwargs):
     
     message = status_messages.get(instance.status)
     
-    if not message:
-        return
+    if message:
+        # Отправляем в телеграм
+        send_telegram_message(instance.user.telegram_id, message)
         
-    # Проверяем, не отправляли ли мы уже это уведомление (можно добавить поле last_notified_status в модель)
-    # Но пока просто шлем.
-    
-    send_telegram_message(instance.user.telegram_id, message)
+        # Создаем уведомление в приложении (UserNotification)
+        # Тип уведомления для статуса
+        notif_type = 'order_status'
+        if instance.status == 'done':
+            notif_type = 'order_approved' # Условно, завершен = одобрен/готов
+        elif instance.status == 'canceled':
+            notif_type = 'order_cancelled'
+            
+        create_user_notification(
+            telegram_id=instance.user.telegram_id,
+            title=f"Статус заказа #{instance.id}",
+            message=message,
+            notification_type=notif_type,
+            order=instance
+        )
+
+
+@receiver(post_save, sender=OrderCancellationRequest)
+def notify_cancellation_status(sender, instance, created, **kwargs):
+    """Уведомление при изменении статуса запроса на отмену"""
+    if not created and instance.status in ['approved', 'rejected']:
+        order = instance.order
+        
+        if instance.status == 'approved':
+            title = "Отмена заказа одобрена"
+            message = f"Ваш запрос на отмену заказа #{order.id} был одобрен. Заказ отменен."
+            notification_type = 'cancel_approved'
+        else:  # rejected
+            title = "Отказ в отмене заказа"
+            message = f"Ваш запрос на отмену заказа #{order.id} отклонен. "
+            if instance.reason: # Добавляем причину отказа, если есть (хотя в модели reason usually for request reason, operator response might need another field, but assuming simple flow)
+                 # Actually, processed_by operator doesn't leave a reject note in the current model explicitly except changing status.
+                 pass
+            message += "Свяжитесь с поддержкой для деталей."
+            notification_type = 'cancel_rejected'
+        
+        # Отправляем в телеграм
+        send_telegram_message(order.user.telegram_id, f"{title}\n{message}")
+
+        # Создаем уведомление в приложении
+        create_user_notification(
+            telegram_id=order.user.telegram_id,
+            title=title,
+            message=message,
+            notification_type=notification_type,
+            order=order
+        )
 
 
 def send_telegram_message(chat_id, text):

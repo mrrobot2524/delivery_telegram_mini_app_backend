@@ -40,7 +40,26 @@ class MiniAppUserMixin:
             if created:
                 print(f"Created dev user: {tg_user}")
             return tg_user
-        
+        # Guest User Support
+        guest_id = request.headers.get("X-Guest-ID")
+        if not init_data and guest_id:
+             try:
+                # Guest IDs are negative to avoid conflict with Telegram IDs
+                g_id = int(guest_id)
+                if g_id > 0: g_id = -g_id # Force negative
+                
+                tg_user, created = TelegramUser.objects.get_or_create(
+                    telegram_id=g_id,
+                    defaults={
+                        "username": f"guest_{abs(g_id)}",
+                        "first_name": "Гость",
+                        "last_name": "",
+                    },
+                )
+                return tg_user
+             except ValueError:
+                 pass
+
         data = validate_init_data(init_data)
         if not data or "user" not in data:
             print("MiniAppUserMixin: invalid init_data, user not found")
@@ -171,26 +190,55 @@ class CartView(MiniAppUserMixin, APIView):
             return Response({"detail": "Invalid or unknown Telegram user"}, status=400)
 
         product_id = request.data.get("product_id")
+        qr_product_id = request.data.get("qr_product_id")
         quantity = int(request.data.get("quantity", 1))
 
-        if not product_id:
-            return Response({"detail": "product_id is required"}, status=400)
+        if not product_id and not qr_product_id:
+            return Response({"detail": "product_id or qr_product_id is required"}, status=400)
 
-        try:
-            product = Product.objects.get(id=product_id, is_active=True)
-        except Product.DoesNotExist:
-            return Response({"detail": "Product not found"}, status=404)
+        target_product = None
+        target_qr_product = None
+        price = 0
+        
+        if product_id:
+            try:
+                target_product = Product.objects.get(id=product_id, is_active=True)
+                price = target_product.get_discounted_price()
+            except Product.DoesNotExist:
+                return Response({"detail": "Product not found"}, status=404)
+        
+        elif qr_product_id:
+            from qr_menu.models import QROnlyProduct
+            try:
+                target_qr_product = QROnlyProduct.objects.get(id=qr_product_id, is_active=True)
+                price = target_qr_product.price
+            except QROnlyProduct.DoesNotExist:
+                return Response({"detail": "QR Product not found"}, status=404)
 
         cart, _ = Order.objects.get_or_create(user=tg_user, status="cart")
 
-        item, created = OrderItem.objects.get_or_create(
-            order=cart,
-            product=product,
-            defaults={"quantity": quantity, "price": product.price},
-        )
-        if not created:
+        # Ищем существующий item
+        # get_or_create может быть сложноват с разными полями, сделаем явно
+        item_qs = OrderItem.objects.filter(order=cart)
+        if target_product:
+            item_qs = item_qs.filter(product=target_product)
+        else:
+            item_qs = item_qs.filter(qr_product=target_qr_product)
+            
+        item = item_qs.first()
+
+        if item:
             item.quantity += quantity
+            item.price = price
             item.save()
+        else:
+            item = OrderItem.objects.create(
+                order=cart,
+                product=target_product,
+                qr_product=target_qr_product,
+                quantity=quantity,
+                price=price
+            )
 
         cart.refresh_from_db()
         
@@ -399,9 +447,9 @@ class CheckoutView(MiniAppUserMixin, APIView):
             comment = request.data.get("comment", "")
             payment_method = request.data.get("payment_method", "cash")  # По умолчанию наличные
 
-            if delivery_type not in ("pickup", "delivery"):
+            if delivery_type not in ("pickup", "delivery", "dine_in"):
                 return Response(
-                {"detail": "delivery_type must be 'pickup' or 'delivery'"},
+                {"detail": "delivery_type must be 'pickup', 'delivery' or 'dine_in'"},
                 status=400,
             )
 
@@ -427,8 +475,20 @@ class CheckoutView(MiniAppUserMixin, APIView):
                     final_latitude = user_address.latitude
                     final_longitude = user_address.longitude
                 except UserAddress.DoesNotExist:
-                     return Response({"detail": "Address not found"}, status=404)
+                     pass
 
+            # Обработка table_uuid для заказов в заведении
+            table_uuid = request.data.get("table_uuid")
+            if delivery_type == "dine_in":
+                if not table_uuid:
+                     return Response({"detail": "table_uuid required for dine_in"}, status=400)
+                from qr_menu.models import QRTable
+                try:
+                    table = QRTable.objects.get(uuid=table_uuid)
+                    cart.table = table
+                except QRTable.DoesNotExist:
+                     return Response({"detail": "Invalid table_uuid"}, status=400)
+            
             # Валидация полей для доставки
             if delivery_type == "delivery":
                 if not (final_address_text or (final_latitude is not None and final_longitude is not None)):
@@ -447,6 +507,17 @@ class CheckoutView(MiniAppUserMixin, APIView):
                 try:
                     cart.latitude = float(final_latitude)
                     cart.longitude = float(final_longitude)
+                    
+                    # Рассчитываем стоимость доставки
+                    if delivery_type == "delivery":
+                        from .utils import calculate_delivery_cost
+                        price, distance = calculate_delivery_cost(cart.latitude, cart.longitude)
+                        cart.delivery_price = price
+                        cart.distance_km = distance
+                    else:
+                        cart.delivery_price = 0
+                        cart.distance_km = 0
+
                 except (TypeError, ValueError):
                     return Response(
                         {"detail": "latitude and longitude must be numbers"}, status=400
@@ -475,6 +546,34 @@ class CheckoutView(MiniAppUserMixin, APIView):
                 "cart": OrderSerializer(new_cart).data if new_cart else {"items": [], "total_price": 0},
                 "active_orders": [OrderSerializer(order).data for order in active_orders],
             }
+            
+            # Генерация ссылки на оплату (если выбрана онлайн оплата)
+            # Фронтенд должен прислать payment_method='online' и payment_provider='payme' (или 'click')
+            if payment_method == "online" or payment_method in ["payme", "click"]: 
+                # Поддержка упрощенного варианта, если фронт шлет "payme" в payment_method
+                provider = request.data.get("payment_provider")
+                if not provider and payment_method in ["payme", "click"]:
+                    provider = payment_method
+                
+                # По умолчанию payme, если provider не указан
+                if not provider:
+                    provider = "payme"
+                
+                # Используем наш процессор
+                from .payment_service import PaymentProcessor
+                processor = PaymentProcessor()
+                
+                # cart - это переменная, которая хранит оформленный заказ (статус уже 'new')
+                payment_res = processor.create_payment_session(cart, provider=provider)
+                
+                if payment_res.get('success'):
+                    response_data['payment_url'] = payment_res['payment_url']
+                    response_data['payment_type'] = payment_res.get('type') # telegram_invoice or redirect
+                    response_data['payment_provider'] = provider
+                else:
+                    # Логируем ошибку, но заказ уже создан. Можно вернуть warning.
+                    print(f"Payment generation failed: {payment_res.get('error')}")
+            
             return Response(response_data, status=status.HTTP_200_OK)
         except Exception as e:
             import traceback
@@ -1045,8 +1144,10 @@ class InitiatePaymentView(MiniAppUserMixin, APIView):
         # Create payment session
         try:
             processor = PaymentProcessor(request=request)
-            print(f"[InitiatePaymentView] Creating payment session for order {order_id}")
-            payment_result = processor.create_payment_session(order)
+            provider = request.data.get('provider') # Get provider from request
+            
+            print(f"[InitiatePaymentView] Creating payment session for order {order_id} with provider {provider}")
+            payment_result = processor.create_payment_session(order, provider=provider)
             print(f"[InitiatePaymentView] Payment result: {payment_result}")
             
             if not payment_result.get('success'):
@@ -1209,6 +1310,7 @@ class PaymentCallbackView(APIView):
             click_transaction.save()
 
             order.payment_status = 'paid'
+            order.transaction_id = str(click_transaction.click_trans_id)
             order.paid_at = timezone.now()
             # Можно также перевести статус заказа в "new" или "preparing"
             if order.status == 'cart':
@@ -1383,3 +1485,160 @@ class MockPaymentCallbackView(APIView):
             },
             status=status.HTTP_200_OK
         )
+
+class OrderReceiptView(APIView):
+    """
+    GET /api/orders/<int:order_id>/receipt/
+    Generates an HTML receipt for the order.
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request, order_id):
+        from .models import Order
+        from django.shortcuts import render
+        from django.http import HttpResponse
+        
+        try:
+            order = Order.objects.get(id=order_id)
+        except Order.DoesNotExist:
+            return HttpResponse("Заказ не найден", status=404)
+        
+        # Разрешаем просмотр, если это публичный чек
+        # В идеале нужно проверять владельца, но для ссылки из бота это допустимо
+        
+        context = {
+            "order": order,
+            "items": order.items.select_related('product').all(),
+            "date": order.created_at,
+            "total": order.final_price,
+            "payment_method": order.get_payment_method_display(),
+            "payment_status": order.get_payment_status_display(),
+            "is_paid": order.payment_status == 'paid',
+        }
+        
+        # Simple HTML template inline for simplicity, or use a file
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Чек заказа #{order.id}</title>
+            <style>
+                body {{ font-family: 'Courier New', Courier, monospace; background: #f5f5f5; padding: 20px; }}
+                .receipt {{ max-width: 400px; margin: 0 auto; background: white; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); border-radius: 5px; }}
+                .header {{ text-align: center; margin-bottom: 20px; border-bottom: 2px dashed #ccc; padding-bottom: 15px; }}
+                .logo {{ font-size: 24px; font-weight: bold; margin-bottom: 5px; }}
+                .info {{ font-size: 14px; color: #555; margin-bottom: 5px; }}
+                .items {{ margin-bottom: 20px; width: 100%; border-collapse: collapse; }}
+                .items th {{ text-align: left; border-bottom: 1px solid #eee; padding: 5px 0; font-size: 12px; }}
+                .items td {{ padding: 5px 0; font-size: 14px; border-bottom: 1px dashed #eee; }}
+                .total {{ margin-top: 20px; border-top: 2px dashed #000; padding-top: 10px; font-weight: bold; font-size: 18px; display: flex; justify-content: space-between; }}
+                .footer {{ margin-top: 30px; text-align: center; font-size: 12px; color: #888; }}
+                .status-paid {{ color: green; border: 2px solid green; display: inline-block; padding: 5px 10px; transform: rotate(-10deg); margin-top: 10px; font-size: 20px; opacity: 0.8; }}
+                .status-unpaid {{ color: red; border: 2px solid red; display: inline-block; padding: 5px 10px; font-size: 20px; opacity: 0.8; }}
+            </style>
+        </head>
+        <body>
+            <div class="receipt">
+                <div class="header">
+                    <div class="logo">KY SUSHI</div>
+                    <div class="info">Джизак, ул. Орзу Махмудов, 11</div>
+                    <div class="info">+998 (90) 123-45-67</div>
+                    <div class="info">Заказ #{order.id}</div>
+                    <div class="info">{order.created_at.strftime('%d.%m.%Y %H:%M')}</div>
+                    
+                    {'<div class="status-paid">ОПЛАЧЕНО</div>' if order.payment_status == 'paid' else '<div class="status-unpaid">НЕ ОПЛАЧЕНО</div>'}
+                </div>
+                
+                <table class="items">
+                    <thead>
+                        <tr>
+                            <th>Товар</th>
+                            <th style="text-align: right;">Сумма</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        """
+        
+        for item in context['items']:
+            item_total = item.price * item.quantity
+            html_content += f"""
+                        <tr>
+                            <td>
+                                {item.product.name}<br>
+                                <span style="font-size: 11px; color: #888;">{item.quantity} x {item.price:,.0f}</span>
+                            </td>
+                            <td style="text-align: right;">{item_total:,.0f}</td>
+                        </tr>
+            """
+            
+        html_content += f"""
+                    </tbody>
+                </table>
+                
+                <div class="total">
+                    <span>ИТОГО:</span>
+                    <span>{order.final_price:,.0f} сум</span>
+                </div>
+                
+                <div style="margin-top: 10px; font-size: 13px;">
+                    <div>Способ оплаты: {order.get_payment_method_display()}</div>
+                    <div>Доставка: {order.get_delivery_type_display()}</div>
+                </div>
+                
+                <div class="footer">
+                    Спасибо за заказ!<br>
+                    Приятного аппетита 🍣
+                </div>
+            </div>
+            
+            <script>
+                // Автоматически предложить печать, если открыто на десктопе
+                if (!(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent))) {{
+                   // window.print(); // Можно раскомментировать
+                }}
+            </script>
+        </body>
+        </html>
+        """
+        
+        return HttpResponse(html_content)
+
+class CalculateDeliveryView(APIView):
+    """
+    Рассчитывает стоимость доставки по координатам
+    POST /api/orders/calculate-delivery/
+    body: { latitude: float, longitude: float }
+    """
+    permission_classes = [AllowAny] 
+    
+    def post(self, request):
+        lat = request.data.get('latitude')
+        lng = request.data.get('longitude')
+        
+        if lat is None or lng is None:
+            # Если координат нет, можно вернуть какую-то дефолтную (базовую) цену
+            # Но лучше ошибку, чтобы фронт знал
+            from .models import RestaurantSettings
+            s, _ = RestaurantSettings.objects.get_or_create(pk=1)
+            return Response({
+                'price': s.delivery_base_price,
+                'distance_km': 0,
+                'formatted_price': f"{int(s.delivery_base_price):,} сум".replace(",", " ")
+            })
+            
+        try:
+            lat = float(lat)
+            lng = float(lng)
+        except (ValueError, TypeError):
+             return Response({'error': 'Invalid coordinates'}, status=400)
+            
+        from .utils import calculate_delivery_cost
+        price, distance = calculate_delivery_cost(lat, lng)
+        
+        return Response({
+            'price': price,
+            'distance_km': distance,
+            'formatted_price': f"{int(price):,} сум".replace(",", " ")
+        })

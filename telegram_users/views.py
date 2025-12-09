@@ -75,40 +75,51 @@ class UserProfileView(APIView):
             user_payload = data["user"]
             telegram_id = user_payload["id"]
         
-        try:
-            tg_user = TelegramUser.objects.get(telegram_id=telegram_id)
+            user_payload = data["user"]
+            telegram_id = user_payload["id"]
             
-            # Получаем статистику пользователя
-            orders_count = Order.objects.filter(user=tg_user).exclude(status='cart').count()
-            favorites_count = Favorite.objects.filter(user=tg_user).count()
-            
-            # Получаем историю заказов (последние 20)
-            orders_history = (
-                Order.objects.filter(user=tg_user)
-                .exclude(status='cart')
-                .order_by('-created_at')[:20]
-                .prefetch_related('items__product')
+            # Автоматически создаем или обновляем пользователя (если не dev_mode)
+            tg_user, _ = TelegramUser.objects.update_or_create(
+                telegram_id=telegram_id,
+                defaults={
+                    "username": user_payload.get("username"),
+                    "first_name": user_payload.get("first_name"),
+                    "last_name": user_payload.get("last_name"),
+                }
             )
+
+        # Здесь tg_user уже гарантированно существует (либо из dev_mode, либо создан выше)
             
-            # Получаем активные заказы
-            active_orders = (
-                Order.objects.filter(user=tg_user, status__in=['new', 'preparing', 'delivering'])
-                .order_by('-created_at')
-                .prefetch_related('items__product')
-            )
-            
-            # Сериализуем данные пользователя
-            user_serializer = TelegramUserSerializer(tg_user, context={'request': request})
-            user_data = user_serializer.data
-            
-            # Добавляем статистику и заказы
-            user_data['stats'] = {
-                'orders_count': orders_count,
-                'favorites_count': favorites_count
-            }
-            user_data['orders_history'] = OrderSerializer(orders_history, many=True).data
-            user_data['active_orders'] = OrderSerializer(active_orders, many=True).data
-            
-            return Response(user_data)
-        except TelegramUser.DoesNotExist:
-            return Response({"detail": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        # Получаем статистику пользователя
+        orders_count = Order.objects.filter(user=tg_user).exclude(status='cart').count()
+
+        favorites_count = Favorite.objects.filter(user=tg_user).count()
+        
+        # Получаем историю заказов (последние 20)
+        orders_history = (
+            Order.objects.filter(user=tg_user)
+            .exclude(status='cart')
+            .order_by('-created_at')[:20]
+            .prefetch_related('items__product')
+        )
+        
+        # Получаем активные заказы
+        active_orders = (
+            Order.objects.filter(user=tg_user, status__in=['new', 'preparing', 'delivering'])
+            .order_by('-created_at')
+            .prefetch_related('items__product')
+        )
+        
+        # Сериализуем данные пользователя
+        user_serializer = TelegramUserSerializer(tg_user, context={'request': request})
+        user_data = user_serializer.data
+        
+        # Добавляем статистику и заказы
+        user_data['stats'] = {
+            'orders_count': orders_count,
+            'favorites_count': favorites_count
+        }
+        user_data['orders_history'] = OrderSerializer(orders_history, many=True).data
+        user_data['active_orders'] = OrderSerializer(active_orders, many=True).data
+        
+        return Response(user_data)
